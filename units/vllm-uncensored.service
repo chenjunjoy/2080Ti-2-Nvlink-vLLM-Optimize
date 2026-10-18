@@ -1,0 +1,20 @@
+[Unit]
+Description=vLLM OpenAI API (Qwen3.8-27B-Uncensored, 256K, DFlash2)
+After=network-online.target
+Wants=network-online.target
+# 与原模型服务互斥(两张卡显存只能跑一个)
+Conflicts=vllm.service
+
+[Service]
+Type=simple
+User=jim
+Group=jim
+WorkingDirectory=/home/jim/vLLM-2080Ti-Definitive
+ExecStart=/home/jim/scripts/vllm-uncensored-run.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=900
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

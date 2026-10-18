@@ -1,0 +1,18 @@
+[Unit]
+Description=vLLM OpenAI API (Qwen3.8-27B-NVFP4, 256K, DFlash2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jim
+Group=jim
+WorkingDirectory=/home/jim/vLLM-2080Ti-Definitive
+ExecStart=/home/jim/scripts/vllm-run.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=900
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
