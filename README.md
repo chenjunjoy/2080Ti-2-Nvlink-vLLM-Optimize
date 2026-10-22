@@ -4,7 +4,7 @@
 > 软件：**vLLM 2080 Ti Definitive Edition**（`github.com/weicj/vLLM-2080Ti-Definitive`）
 > 版本：`v0.2.2-post3`（上游基线 `v0.29.1rc0-33-gb23433088b`），CUDA 13.0，torch 2.13.0+cu130，SM75
 > 服务：`vllm.service`（原模型 :8000）、`vllm-uncensored.service`（无审查 :8002），互斥、均不开机自启
-> 整理日期：2026-10-19
+> 整理日期：2026-10-19（2026-10-22 追加 §9：博主同款 AWQ-INT4 复刻 + text-only A/B）
 > 依据：`/home/jim/vLLM-2080Ti-Definitive`、`/home/jim/scripts/`、systemd 单元、`build-logs/`、`run-logs/`、`/home/jim/launch*.log`、`/srv/share/strata-ops/BENCHMARK-vs-vLLM.zh-CN.md`
 
 ---
@@ -209,3 +209,94 @@ python3 /srv/share/strata-ops/llm-bench.py <标签> http://127.0.0.1:8002 Qwen3.
 - DFlash2 vs MTP、NVLink 开/关均为单批次测量，存在 ±5–10% 波动。
 - 质量评估只做了“可用性/图文理解”抽查，未做系统基准。
 - 上游 fork 的 SM75 实现细节不在本复盘范围内，本文只记录本机部署与调优。
+
+---
+
+## 9. 2026-10-22 追加：博主同款 AWQ-INT4 复刻 + text-only A/B
+
+### 9.1 背景
+
+拿到一位博主（小红书「🇨🇳武文」）的公开配置：`cyankiwi/Qwen3.8-27B-AWQ-INT4` + MTP3 + 192K + 固定 8.5 GB FP16 KV + `max-num-seqs=64` + 纯文本。目标是**在本机复刻同一配置**，与博主公布数据做同口径对比。
+
+### 9.2 复刻清单
+
+| 项 | 博主 | 本机复刻 | 一致性 |
+|---|---|---|---|
+| 权重 | `cyankiwi/Qwen3.8-27B-AWQ-INT4`（21.04 GB） | 同（`/srv/share/models/`，5 分片字节校验一致） | ✅ |
+| 量化 | compressed-tensors int4 pack-quantized / group 32 / mse | 同 | ✅ |
+| 投机 | `{"method":"mtp","num_speculative_tokens":3}` | 同 | ✅ |
+| 上下文 | 196608 | 196608 | ✅ |
+| KV | `--kv-cache-memory-bytes 8500000000`（FP16） | 同 | ✅ |
+| 并发/批 | `max-num-seqs=64` / `max-num-batched-tokens=1024` | 同 | ✅ |
+| 工具 | `qwen3_coder` | 同 | ✅ |
+| 形态 | `--language-model-only --skip-mm-profiling` | 同 | ✅ |
+| 生成 | `--generation-config vllm` | 同 | ✅ |
+| 环境 | `SM75_SPEC_SYNC_MODE=auto`、`ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=0`、`MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0`、`expandable_segments:True` | 同 | ✅ |
+| **实测 KV 容量** | **229,752 tokens** | **229,752 tokens** | ✅ 逐位一致 |
+| **实测 MTP 接受率** | **~73%** | **73%（mean_accept_len 3.182 / accept_rate 0.7273）** | ✅ 一致 |
+
+> 服务：`vllm-awq-int4.service`（端口 8003，与其它 27B 服务 `Conflicts=` 互斥）。
+
+### 9.3 复刻中遇到的两个环境级阻塞（重要）
+
+1. **custom all-reduce 在 CUDA 13.0 下崩溃**
+   ```
+   Failed: Cuda error .../csrc/custom_all_reduce.cuh:170 'invalid argument'
+   → Worker died → EngineCore initialization failed
+   ```
+   - 试过限制 CUDA Graph 档位（[1..64]）无效；只要启用 custom all-reduce 就崩。
+   - 结论：与博主 CUDA 12.8 的工具链差异导致，**只能 `--disable-custom-all-reduce`（NCCL 回退）**。
+2. **CUDA Graph 被强制降级**
+   ```
+   CUDAGraphMode.FULL_AND_PIECEWISE is not supported with spec-decode for
+   attention backend FlashInferBackend ... setting cudagraph_mode=PIECEWISE
+   ```
+   - 博主表里是 FULL_AND_PIECEWISE（51 档全图）；本机只能跑 PIECEWISE。
+   - 这是 decode 每步开销变大的主要嫌疑。
+
+### 9.4 同口径结果（`/srv/share/strata-ops/llm-bench.py`，真实提示词，3 次中位）
+
+| 服务 · 模型 | decode | TTFT | 6K 提示读取 |
+|---|---:|---:|---:|
+| **vLLM · 无审查 + DFlash2（带视觉，当前长期）** | **93.74** | 133 ms | 5.08 s |
+| vLLM · 无审查 + text-only + DFlash2（本次 A/B） | **94.66** | 130 ms | 5.06 s |
+| vLLM · 无审查 + 自带 MTP | 69.85 | 141 ms | 5.17 s |
+| vLLM · 基座 Qwen3.8-27B-NVFP4（:8000） | 75.39 | 92 ms | 4.66 s |
+| **vLLM · AWQ-INT4 + MTP3（博主复刻）** | **37.17** | 85 ms | **4.17 s** |
+| Strata · IQ2_XS（125B） | 84.32 | 78 ms | 6.61 s |
+| Strata · Orca IQ3_XXS（125B） | 69.56 | 86 ms | 6.72 s |
+| *博主公布（AWQ+MTP3）* | *~84* | *74 ms* | *—* |
+
+### 9.5 与博主的差异归因
+
+| 指标 | 博主 | 本机复刻 | 说明 |
+|---|---:|---:|---|
+| decode | ~84 | **37.17** | ❌ 只有 44% |
+| MTP 接受率 | 73% | **73%** | ✅ 配置正确 |
+| KV 容量 | 229,752 | **229,752** | ✅ 配置正确 |
+| 6K prefill | — | **4.17 s** | 本机最快 |
+
+**结论：配置复刻是准确的（接受率、KV 逐位一致），但博主公布的 decode 在本机复现不了。** 差异来自环境而非配置：CUDA 13.0 + NCCL 回退 + CUDA Graph 降级（PIECEWISE）+ 框架 v0.2.2 vs v0.1.17。
+
+### 9.6 text-only A/B（NVFP4 + DFlash2）
+
+| 版本 | decode | TTFT | 6K prefill | KV 容量 | DFlash2 接受率 |
+|---|---:|---:|---:|---:|---:|
+| A：带视觉 | 93.74 | 133 ms | 5.08 s | 348,979 | 48.6% |
+| B：text-only（`--language-model-only --skip-mm-profiling`） | 94.66 | 130 ms | 5.06 s | **432,537** | 49.6% |
+| 变化 | +1% | −2% | **−0.4%（无实质提升）** | **+24%** | ≈ |
+
+- 日志确认视觉塔关闭：`All limits of multimodal modalities ... set to 0, running in text-only mode.`
+- **text-only 并不提升速度**，只把 KV 容量提高约 24%；在 `max-num-seqs=1` 下这部分 KV 用不到，且会失去图像输入。
+- 因此 **保留带视觉版本**（A），text-only 不作为默认。
+
+### 9.7 结论与后续
+
+1. **保持 NVFP4 + DFlash2（带视觉）** 作为本机最优：decode 93.74，256K，支持图像。
+2. **不要换 AWQ-INT4**：本机 decode 只有 37.17（约为 NVFP4 版的 40%），只胜在 prefill（4.17 s）。
+3. AWQ 复刻版 6K prefill 快于 NVFP4（4.17 vs 5.06 s），**原因不是 text-only**（已证伪），剩余嫌疑是 `max-num-batched-tokens=1024` 或 AWQ-INT4 的解量化路径。
+4. 待验证的优化：把 target attention backend 从 FlashInfer 换成 `TRITON_ATTN`，看能否恢复 FULL_AND_PIECEWISE，从而提升 decode。
+5. 若未来升级到 CUDA 12.8 工具链，可重新评估 custom all-reduce 与全图捕获。
+
+> 证据：`/srv/share/strata-ops/logs/bench-awq-int4.txt`、`bench-textonly-nvfp4.txt`、`bench2-vllm-uncensored.txt`；服务脚本 `/home/jim/scripts/vllm-awq-int4-run.sh`、`vllm-uncensored-run.sh`；单元 `/etc/systemd/system/vllm-awq-int4.service`。
+
