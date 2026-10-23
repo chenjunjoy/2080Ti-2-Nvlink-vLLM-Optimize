@@ -1,0 +1,7 @@
+  decode run1: TTFT     323 ms |  76.28 tok/s | 256 tokens (server tokens in 76 chunks)
+  decode run2: TTFT     130 ms |  99.99 tok/s | 256 tokens (server tokens in 76 chunks)
+  decode run3: TTFT     128 ms |  99.93 tok/s | 256 tokens (server tokens in 76 chunks)
+  prefill run1: TTFT   4.95 s  (~6K-token cold prompt)
+  prefill run2: TTFT   4.92 s  (~6K-token cold prompt)
+  prefill run3: TTFT   4.93 s  (~6K-token cold prompt)
+[vllm-p2] decode 99.93 tok/s | TTFT 130 ms | 6K-prompt TTFT 4.93 s

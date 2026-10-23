@@ -29,6 +29,10 @@ export VLLM_KV_CACHE_LAYOUT=BLHNC
 export VLLM_SM75_SPEC_SYNC_MODE=safe
 export VLLM_USE_V2_MODEL_RUNNER=1
 
+# Keep the vllm-turing plugin scoped to the uncensored 27B route; this route is
+# validated on the fork's own kernels (2026-10-23).
+export VLLM_TURING_DISABLE=1
+
 exec "$PROJECT/.venv/bin/python" -m vllm.entrypoints.openai.api_server \
   --host 0.0.0.0 \
   --port 8000 \

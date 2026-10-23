@@ -300,3 +300,56 @@ python3 /srv/share/strata-ops/llm-bench.py <标签> http://127.0.0.1:8002 Qwen3.
 
 > 证据：`/srv/share/strata-ops/logs/bench-awq-int4.txt`、`bench-textonly-nvfp4.txt`、`bench2-vllm-uncensored.txt`；服务脚本 `/home/jim/scripts/vllm-awq-int4-run.sh`、`vllm-uncensored-run.sh`；单元 `/etc/systemd/system/vllm-awq-int4.service`。
 
+
+---
+
+## 10. 2026-10-23 追加：vllm-turing 插件优化无审查版
+
+> 参考：`https://github.com/cookjohn/vllm-turing`（克隆在 `/srv/share/vllm-turing`）。
+> 对象：`Qwen3.8-27B-abliterated-NVFP4` + DFlash2/7，TP2，FP8 KV，262144 context，端口 8002。
+> 约束：不换模型、不下载新权重；只在本机已有 vLLM 0.2.2 fork 上叠加兼容的插件与启动参数。
+
+### 10.1 做了什么
+
+1. 克隆并 editable 安装插件到现有 venv：
+   ```bash
+   git clone --depth 1 https://github.com/cookjohn/vllm-turing.git /srv/share/vllm-turing
+   uv pip install --python /home/jim/vLLM-2080Ti-Definitive/.venv/bin/python -e /srv/share/vllm-turing
+   ```
+2. 本机 vLLM 缺少 `vllm.vllm_flash_attn.layers`，插件的 `vitlowmem` 会在此报错；在无审查启动脚本中设 `VLLM_TURING_VIT_LOWMEM=0`。
+3. 采用插件与仓库建议的兼容项：
+   - `--mamba-ssm-cache-dtype float16`
+   - `--block-size 880`
+   - `--max-num-batched-tokens 4096`（仓库原文 7040；本机长 prompt 会 OOM，降到 4096）
+   - `--gpu-memory-utilization 0.95`（原 0.96，留出长 prompt 激活余量）
+4. 插件只对无审查版启用；基座版与 AWQ 版脚本加 `VLLM_TURING_DISABLE=1`，避免影响已验证路线。
+
+### 10.2 结果（同机、同模型、单请求）
+
+| 指标 | baseline | 插件 | 插件+P1 | **最终 P4** | 最终 vs baseline |
+|---|---:|---:|---:|---:|---:|
+| decode 256 tok | 93.96 | 96.76 | 100.02 | **99.57** | **+6.0%** |
+| 6K prefill | 5.05 s | 4.97 s | 5.01 s | **4.96 s** | **+1.8%** |
+| 23.8K prefill | 1095.7 | 1156.6 | 1156.9 | **1173.5** | **+7.1%** |
+| 89.2K prefill | 864.4 | 1031.0 | 1034.8 | **1057.5** | **+22.3%** |
+| 89K decode | 81.0 | 84.3 | 87.4 | **87.7** | **+8.2%**（P2 曾 94.2，波动大） |
+| KV 容量 | 348,979 | 419,430 | 461,830 | **443,357** | **+27.0%** |
+
+- 插件主要收益：int8 embedding/LM head/共享 FlashInfer workspace 把 KV 从 349k 提到 419k；`fiattn8`/`fdec`/`gdn`/`customar` 让 89K prefill +19%。
+- `SSM float16 + block 880` 再把 KV 提到 462k、decode +3%。
+- `batch 7040` 长上下文 decode 略快，但长 prompt 触发 PyTorch OOM 警告（请求仍完成）；最终用 4096 + util 0.95，无 OOM。
+
+### 10.3 验证
+
+- 短答 3/3：巴黎、5、疑是地上霜。
+- 针召回：22K 与 89K 各 1 次，均命中（`7391-KX` / `8642-QZ`）。
+- 最终配置长请求 OOM = 0；空闲显存约 2.0 GiB/卡；KV 443,357 tokens（1.69× 262K）。
+
+### 10.4 未完成与注意
+
+- **W8A8 SmoothQuant 路线未做**：需要 BF16 原始权重 + 校准（约 55 GB 下载/转换），本机只有 NVFP4/INT4 权重；因此没有复现仓库 README 的 ~110 tok/s / 3550 prefill。
+- 插件是按 vLLM 0.31 写的，本机是 0.2.2 fork；部分组件不兼容（`vitlowmem` 已关闭，`nosync` 因缺 FlashInfer patch 自动 off）。升级 vLLM 后需重新核对。
+- `--enable-mamba-fine-grained-prefix-cache --prefix-match-unit 80` 未验证；当前 prefix cache 已能把 22K 重复提示的 TTFT 从 19.1 s 降到 1.14 s。
+- 回滚脚本与卸载命令见 [`results/2026-10-23-vllm-turing/SUMMARY.md`](results/2026-10-23-vllm-turing/SUMMARY.md)。
+
+> 证据：`results/2026-10-23-vllm-turing/`；脚本 `/home/jim/scripts/vllm-uncensored-run.sh`；备份 `backups/*.pre-turing-20261023-180714`。

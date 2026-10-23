@@ -1,0 +1,2 @@
+chars= 128000 prompt_tokens=  23831 TTFT=  20.60s prefill=  1156.9 tok/s gen=  33 decode= 117.02 tok/s total=  20.9s
+chars= 480000 prompt_tokens=  89226 TTFT=  86.22s prefill=  1034.8 tok/s gen=  30 decode=  87.36 tok/s total=  86.6s

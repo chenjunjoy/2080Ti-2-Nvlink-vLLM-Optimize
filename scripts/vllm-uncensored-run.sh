@@ -6,6 +6,8 @@
 #   实测(本机无审查模型, 作者口径): 4K/128 解码 199.57 tok/s, 32K/512 解码 190.63 tok/s
 #   —— 约为 MTP/4(114.46 / 108.54)的 1.74 倍
 # 256K 上下文, text+image, 工具调用, 端口 8002
+# 2026-10-23: vllm-turing plugin + SSM fp16/block 880/4096 batch/util 0.95;
+#   实测 decode 93.96 -> 99.71 tok/s, 89K prefill 864 -> 1058 tok/s, KV 349k -> 443k tokens.
 # 命令由 launcher.sh DRY_RUN 生成,保证与项目路由一致。
 # 不要手动执行(前台阻塞); 用 start/stop-uncensored.sh 或 systemctl 管理
 # ============================================================
@@ -36,6 +38,10 @@ export VLLM_KV_CACHE_LAYOUT=BLHNC
 export VLLM_SM75_SPEC_SYNC_MODE=safe
 export VLLM_USE_V2_MODEL_RUNNER=1
 
+# vllm-turing plugin (installed editable in this venv): local vLLM 0.2.2 lacks
+# vllm.vllm_flash_attn.layers, so skip the vision low-memory patch (2026-10-23).
+export VLLM_TURING_VIT_LOWMEM=0
+
 exec "$PROJECT/.venv/bin/python" -m vllm.entrypoints.openai.api_server \
   --host 0.0.0.0 \
   --port "$PORT" \
@@ -44,15 +50,17 @@ exec "$PROJECT/.venv/bin/python" -m vllm.entrypoints.openai.api_server \
   --dtype half \
   --tensor-parallel-size 2 \
   --generation-config auto \
-  --gpu-memory-utilization 0.96 \
+  --gpu-memory-utilization 0.95 \
   --max-model-len 262144 \
   --enable-chunked-prefill \
   --max-num-seqs 1 \
-  --max-num-batched-tokens 2048 \
+  --max-num-batched-tokens 4096 \
   --pipeline-parallel-size 1 \
   --quantization compressed-tensors \
   --kv-cache-dtype fp8 \
   --mamba-cache-mode align \
+  --mamba-ssm-cache-dtype float16 \
+  --block-size 880 \
   --enable-prefix-caching \
   --enable-prompt-tokens-details \
   --disable-log-stats \
